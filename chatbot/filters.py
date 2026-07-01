@@ -15,8 +15,8 @@ class QueryFilters:
     site_name: str | None = None
     date_start: date | None = None
     date_end: date | None = None
-    apply_site: bool = True
-    apply_dates: bool = True
+    apply_site: bool = False
+    apply_dates: bool = False
 
     def mongo_filter(self) -> dict:
         """Build MongoDB filter clauses from active sidebar filters."""

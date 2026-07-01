@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Literal
 
 Phase = Literal[
+    "warming_model",
     "loading_model",
     "retrieving_context",
     "thinking",
@@ -18,7 +19,8 @@ Phase = Literal[
 ]
 
 STATUS_LABELS: dict[str, str] = {
-    "loading_model": "Loading model `{detail}`...",
+    "warming_model": "Loading model into memory (first time only): `{detail}`",
+    "loading_model": "Connecting to `{detail}`...",
     "retrieving_context": "Retrieving relevant schema context (RAG)...",
     "thinking": "Thinking...",
     "querying_database": "Querying database — `{detail}`",
