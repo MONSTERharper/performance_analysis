@@ -1,0 +1,131 @@
+{
+  "database": "test_db2",
+  "description": "Digital pathology whole-slide imaging scanner performance analytics",
+  "primary_join_key": "site_key",
+  "batch_keys": ["site_key", "date_str", "source_zip"],
+  "entity_hierarchy": ["customer", "site", "cluster", "station", "load", "slide"],
+  "collections": {
+    "customers": {
+      "purpose": "Customer registry",
+      "doc_count": 17,
+      "join_keys": ["customer_id", "site_keys"],
+      "links_to": ["sites"]
+    },
+    "sites": {
+      "purpose": "Site registry — canonical site metadata",
+      "doc_count": 23,
+      "join_keys": ["site_key", "customer_id"],
+      "links_to": ["all operational collections via site_key"]
+    },
+    "scanners": {
+      "purpose": "Physical scanner hardware inventory",
+      "doc_count": 413,
+      "join_keys": ["scanner_id"],
+      "links_to": ["scan_performance_log_statistics_detailed.records.scanner_serial_number"]
+    },
+    "ingestion_reservation": {
+      "purpose": "Pipeline lock table before data insert",
+      "doc_count": 17487,
+      "join_keys": ["collection_name", "site_key", "date_str", "source_zip"],
+      "links_to": ["ingestion_audit"]
+    },
+    "ingestion_audit": {
+      "purpose": "Pipeline success log — confirms inserts",
+      "doc_count": 8365,
+      "join_keys": ["collection_name", "site_key", "date_str", "source_zip"],
+      "links_to": ["all ingested collections"]
+    },
+    "scanner_stoppages": {
+      "purpose": "Scanner downtime events — gaps between scans",
+      "doc_count": 20283,
+      "join_keys": ["site_key", "date_str", "cluster", "loadIdentifier"],
+      "links_to": ["scanner_config", "load_time_analysis", "raw_error_logs"]
+    },
+    "raw_error_logs": {
+      "purpose": "Individual error events from backend services",
+      "doc_count": 26156,
+      "join_keys": ["site_key", "date_str", "clusterId"],
+      "links_to": ["Error_counts"]
+    },
+    "Error_counts": {
+      "purpose": "Aggregated daily error frequency with cluster/station breakdown",
+      "doc_count": 3758,
+      "join_keys": ["site_key", "date_str"],
+      "links_to": ["raw_error_logs"]
+    },
+    "load_time_analysis": {
+      "purpose": "Per-load scan duration and slide counts",
+      "doc_count": 14020,
+      "join_keys": ["site_key", "date_str", "clusterId", "loadIdentifier"],
+      "links_to": ["scanner_stoppages"]
+    },
+    "regression_metrics": {
+      "purpose": "Daily scan time vs tissue area regression per site",
+      "doc_count": 993,
+      "join_keys": ["site_key", "date_str"],
+      "links_to": []
+    },
+    "scan_performance_log_statistics_detailed": {
+      "purpose": "Per-scanner quality stats — embedded records array per site per day",
+      "doc_count": 907,
+      "join_keys": ["site_key", "date_str"],
+      "links_to": ["scanners"]
+    },
+    "scanner_config": {
+      "purpose": "Scanner settings snapshot per cluster station per day",
+      "doc_count": 15948,
+      "join_keys": ["site_key", "date_str", "clusterId", "position"],
+      "links_to": ["scanner_stoppages"]
+    },
+    "slide_count_values": {
+      "purpose": "Daily slide throughput per reporting cycle",
+      "doc_count": 1942,
+      "join_keys": ["site_key", "date_str"],
+      "links_to": ["slide_count_values_totals"]
+    },
+    "slide_count_values_totals": {
+      "purpose": "Lifetime cumulative slide totals — one record per site",
+      "doc_count": 17,
+      "join_keys": ["site_key"],
+      "links_to": ["slide_count_values"]
+    },
+    "extracted_cta_logs": {
+      "purpose": "UI click/action telemetry from scanner dashboard",
+      "doc_count": 31575,
+      "join_keys": ["site_key", "date_str", "clusterID"],
+      "links_to": []
+    }
+  },
+  "relationships": [
+  {
+    "from": "customers",
+    "to": "sites",
+    "join": "customers.site_keys contains sites.site_key OR customers.customer_id = sites.customer_id"
+  },
+  {
+    "from": "sites",
+    "to": "scanner_stoppages | raw_error_logs | Error_counts | load_time_analysis | regression_metrics | scanner_config | slide_count_values | extracted_cta_logs | scan_performance_log_statistics_detailed",
+    "join": "sites.site_key = collection.site_key"
+  },
+  {
+    "from": "scanner_stoppages",
+    "to": "scanner_config",
+    "join": "site_key + date_str + cluster=clusterId + station=position"
+  },
+  {
+    "from": "raw_error_logs",
+    "to": "Error_counts",
+    "join": "site_key + date_str; Error_counts aggregates by error message"
+  },
+  {
+    "from": "scanners",
+    "to": "scan_performance_log_statistics_detailed",
+    "join": "scanners.scanner_id = records[].scanner_serial_number"
+  },
+  {
+    "from": "ingestion_reservation",
+    "to": "ingestion_audit",
+    "join": "collection_name + site_key + date_str + source_zip"
+  }
+  ]
+}

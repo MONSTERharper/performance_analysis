@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+output/
+data/saved_queries.json
+*.egg-info/
+.DS_Store
+.ipynb_checkpoints/
