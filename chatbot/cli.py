@@ -1,23 +1,18 @@
-"""Interactive CLI for the performance analytics chatbot (Ollama)."""
+"""Interactive CLI for the test_db2 chatbot (single Ollama model)."""
 
 from __future__ import annotations
 
 import sys
 
-from chatbot.agent import PerformanceChatbot
+from chatbot.agent import Chatbot
 
 
 def main() -> int:
-    print("Performance Analytics Chatbot (test_db2 + Ollama)")
-    print("Type 'quit' or 'exit' to stop, 'reset' to clear conversation.\n")
+    print("test_db2 Assistant — ask about scanner performance data.")
+    print("Type 'quit'/'exit' to stop, 'reset' to clear the conversation.\n")
 
-    try:
-        bot = PerformanceChatbot()
-        print(f"Primary model:  {bot.ollama.primary_model}")
-        print(f"Fallback model: {bot.ollama.fallback_model}\n")
-    except Exception as exc:
-        print(f"Setup error: {exc}", file=sys.stderr)
-        return 1
+    bot = Chatbot()
+    print(f"Model: {bot.client.model}\n")
 
     while True:
         try:
@@ -37,12 +32,10 @@ def main() -> int:
             continue
 
         try:
-            result = bot.chat(user_input, model_mode="auto")
-            print(f"\nAssistant [{result.model_used}]: {result.content}")
-            if result.figure_json:
-                print("  (chart generated)")
-            if result.tool_calls_made:
-                print(f"  (queried: {', '.join(result.tool_calls_made)})")
+            answer = bot.ask(user_input, on_status=lambda s: print(f"  … {s}", flush=True))
+            print(f"\nAssistant: {answer.content}")
+            if answer.tools_used:
+                print(f"  (queried: {', '.join(answer.tools_used)})")
             print()
         except Exception as exc:
             print(f"\nError: {exc}\n", file=sys.stderr)

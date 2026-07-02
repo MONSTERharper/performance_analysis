@@ -1,8 +1,4 @@
-"""Smoke test: every chatbot module (incl. the Streamlit app) imports cleanly.
-
-Catches syntax errors, bad imports, and undefined names before runtime —
-without needing a live MongoDB or Ollama server.
-"""
+"""Smoke test: every chatbot module (incl. the Streamlit app) imports cleanly."""
 
 from __future__ import annotations
 
@@ -13,18 +9,8 @@ import pytest
 MODULES = [
     "config",
     "db.connection",
-    "chatbot.events",
-    "chatbot.filters",
-    "chatbot.intent",
-    "chatbot.context_budget",
-    "chatbot.grounded_summary",
-    "chatbot.query_auto",
-    "chatbot.plot_auto",
-    "chatbot.rag",
     "chatbot.knowledge_loader",
     "chatbot.mongo_tools",
-    "chatbot.export_utils",
-    "chatbot.saved_queries",
     "chatbot.ollama_client",
     "chatbot.agent",
     "chatbot.cli",
@@ -37,13 +23,25 @@ def test_module_imports(module):
 
 
 def test_streamlit_app_imports():
-    # The Streamlit app calls st.set_page_config at import; that is safe to run.
     assert importlib.import_module("chatbot.app") is not None
 
 
 def test_agent_public_api():
-    from chatbot.agent import PerformanceChatbot
+    from chatbot.agent import Chatbot
 
-    bot = PerformanceChatbot.__new__(PerformanceChatbot)
-    assert hasattr(bot, "chat")
+    bot = Chatbot.__new__(Chatbot)
+    assert hasattr(bot, "ask")
     assert hasattr(bot, "reset")
+
+
+def test_tool_definitions_are_read_only():
+    from chatbot.mongo_tools import TOOL_DEFINITIONS
+
+    names = {t["function"]["name"] for t in TOOL_DEFINITIONS}
+    assert names == {
+        "list_collections",
+        "describe_collection",
+        "find_documents",
+        "count_documents",
+        "aggregate",
+    }

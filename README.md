@@ -86,11 +86,10 @@ Environment variables in `.env`:
 | `MONGO_PASSWORD` | *(set in .env)* |
 | `MONGO_AUTH_SOURCE` | `admin` |
 | `OLLAMA_BASE_URL` | `http://localhost:11434/v1` |
-| `OLLAMA_PRIMARY_MODEL` | `deepseek-r1:14b` |
-| `OLLAMA_FALLBACK_MODEL` | `qwen2.5:14b` |
-| `OLLAMA_TIMEOUT` | `120` (seconds) |
+| `OLLAMA_MODEL` | `qwen2.5:14b` |
+| `OLLAMA_TIMEOUT` | `180` (seconds) |
 | `OLLAMA_KEEP_ALIVE` | `60m` |
-| `OLLAMA_NUM_CTX` | `8192` (model context window in tokens) |
+| `OLLAMA_NUM_CTX` | `16384` (model context window in tokens) |
 
 ## LLM Knowledge Base
 
@@ -104,12 +103,14 @@ The `knowledge/` folder contains schema documentation designed to be fed into an
 View or copy the context document:
 
 ```bash
-python -c "from chatbot.knowledge_loader import load_context; print(load_context())"
+python -c "from chatbot.knowledge_loader import build_system_prompt; print(build_system_prompt())"
 ```
 
 ## LLM Chatbot (Streamlit + Ollama)
 
-Interactive web UI with local Ollama models and cascade fallback.
+A minimal chat UI. You ask a question, a single local model (`qwen2.5:14b`) queries
+MongoDB using the read-only tools, and answers from the real results. Nothing else —
+no cascade, no RAG, no filters, no chart generation.
 
 ### Setup Ollama
 
@@ -117,8 +118,7 @@ Interactive web UI with local Ollama models and cascade fallback.
 # Start Ollama (if not already running)
 ollama serve
 
-# Pull required models
-ollama pull deepseek-r1:14b
+# Pull the model
 ollama pull qwen2.5:14b
 ```
 
@@ -131,30 +131,15 @@ streamlit run chatbot/app.py
 
 Opens at `http://localhost:8501`
 
-**Model selection (sidebar):**
-- **Auto** — DeepSeek primary, Qwen fallback (default)
-- **DeepSeek only** — force `deepseek-r1:14b`
-- **Qwen only** — force `qwen2.5:14b`
-
-**Layout:** persistent left **sidebar** holds all controls (New chat, connection/model
-status, Filters, Charts & answers, Model, Knowledge, Saved queries, System); the centered
-main column is the conversation.
-
-**Features:**
-- **Grounded answers (default on):** answers to data questions are built directly from
-  MongoDB query results, so the model cannot rename or invent values (e.g. fabricated
-  error types). Toggle in *Sidebar → Charts & answers*.
-- **Built-in charts (default on):** reliable Plotly templates instead of flaky LLM plot
-  code. Say "plot …", or enable *Attach chart to data answers*.
-- **Context-safe prompts:** requests are trimmed to fit the model's context window
-  (`OLLAMA_NUM_CTX`, default 8192) and automatically retry with a smaller prompt if the
-  window is exceeded — no more "exceeds available context size" crashes.
-- **RAG knowledge retrieval** — only relevant schema chunks per query (not the full doc).
-- Live status updates: retrieving context, loading model, thinking, querying DB, plotting.
-- **Opt-in filters:** site + date range are OFF by default (all data); enable per query.
-- **Saved queries:** bookmark and re-run questions with filters.
-- **Export buttons:** CSV, JSON, chart HTML/PNG, response text on every answer.
-- **Raw data tables:** ask "give me the raw data" — interactive table + download.
+**How it works:**
+- The full `test_db2` schema (`knowledge/test_db2_context.md`) is injected as the system
+  prompt, so the model knows every collection and field.
+- The model has five read-only tools: `list_collections`, `describe_collection`,
+  `find_documents`, `count_documents`, `aggregate`.
+- The model is warmed at `OLLAMA_NUM_CTX` (default 16384) via Ollama's native API so the
+  schema prompt always fits.
+- Query results are shown in an expandable table under each answer, so you can see the
+  raw data the answer came from.
 
 ### Tests
 
@@ -163,10 +148,8 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The suite (no live MongoDB/Ollama needed) covers intent routing, context budgeting,
-grounded-answer formatting, filters, built-in queries, and the full agent flow —
-including regression guards for context-window overflow recovery and post-query
-hallucination.
+The suite (no live MongoDB/Ollama needed) covers the tool-calling loop, the read-only
+tool set, the client wiring, and clean imports.
 
 ### CLI alternative
 
