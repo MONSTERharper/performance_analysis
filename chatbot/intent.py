@@ -15,9 +15,10 @@ GREETINGS = {
 
 DATA_SIGNALS = re.compile(
     r"\b("
-    r"plot|chart|graph|show|list|count|average|top|error|stoppage|slide|scan|"
-    r"site|cluster|raw|table|export|data|trend|compare|how many|which|when|"
-    r"regression|load time|duration|mongo|collection|query|week|day|month"
+    r"plot|chart|graph|show|list|count|average|top|errors?|stoppages?|slides?|scan|"
+    r"sites?|clusters?|raw|table|export|data|trend|compare|how many|which|when|"
+    r"regression|load time|duration|mongo|collections?|query|week|day|month|"
+    r"controller|faults?|failures?|downtime|types?"
     r")\b",
     re.I,
 )

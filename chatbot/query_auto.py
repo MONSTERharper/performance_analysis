@@ -315,32 +315,36 @@ def query_errors_matching(
 
 
 def try_auto_query(query: str, filters: QueryFilters | None) -> dict:
-    """Run a built-in MongoDB query matched from the user question."""
+    """Run a built-in MongoDB query matched from the user question.
+
+    Order matters: specific metric intents (stoppages, load time, slides,
+    errors) are checked before the generic "list sites/collections" intents,
+    so e.g. "which sites have the most stoppages" maps to stoppages, not sites.
+    """
     q = query.lower()
 
-    if re.search(r"\b(collection|collections)\b", q) and re.search(
+    # 1. Controller-specific errors (substring match on the error message)
+    if re.search(r"controller", q) and re.search(r"\berrors?\b", q):
+        return query_errors_matching(filters, text="controller")
+
+    # 2. Metric intents (most specific first)
+    if re.search(r"\b(stoppages?|downtime)\b", q):
+        return query_stoppages_by_site(filters)
+    if re.search(r"\b(load time|load duration|duration)\b", q):
+        return query_load_time_by_site(filters)
+    if re.search(r"\b(slides?|scanned)\b", q):
+        return query_slide_totals(filters)
+    if re.search(r"\berrors?\b", q):
+        return query_top_errors(filters)
+
+    # 3. Generic listing intents
+    if re.search(r"\bcollections?\b", q) and re.search(
         r"\b(list|show|what|which|name)\b", q
     ):
         return query_collections()
-    if re.search(r"\b(site|sites|customer)\b", q) and re.search(
+    if re.search(r"\b(sites?|customers?)\b", q) and re.search(
         r"\b(list|show|which|all|name)\b", q
     ):
         return query_sites(filters)
-    if re.search(r"\b(error|errors)\b", q) and re.search(r"\b(top|most|frequent|common)\b", q):
-        return query_top_errors(filters)
-    if re.search(r"\b(error|errors)\b", q) and re.search(r"controller", q):
-        return query_errors_matching(filters, text="controller")
-    if re.search(r"\b(error|errors)\b", q):
-        return query_top_errors(filters)
-    if re.search(r"\b(slide|slides|scanned)\b", q) and re.search(
-        r"\b(how many|count|total|most|top)\b", q
-    ):
-        return query_slide_totals(filters)
-    if re.search(r"\b(stoppage|stoppages|downtime)\b", q):
-        return query_stoppages_by_site(filters)
-    if re.search(r"\b(load time|load duration|duration)\b", q) and re.search(
-        r"\b(average|avg|by site|per site)\b", q
-    ):
-        return query_load_time_by_site(filters)
 
     return {"success": False, "error": "No matching auto-query template."}

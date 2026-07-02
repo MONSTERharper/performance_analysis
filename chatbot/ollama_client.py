@@ -18,6 +18,7 @@ OLLAMA_PRIMARY_MODEL = os.getenv("OLLAMA_PRIMARY_MODEL", "deepseek-r1:14b")
 OLLAMA_FALLBACK_MODEL = os.getenv("OLLAMA_FALLBACK_MODEL", "qwen2.5:14b")
 OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "120"))
 OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "60m")
+OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "8192"))
 
 ModelMode = Literal["auto", "deepseek", "qwen"]
 
@@ -34,7 +35,9 @@ class OllamaCascadeClient:
         self.primary_model = primary_model or OLLAMA_PRIMARY_MODEL
         self.fallback_model = fallback_model or OLLAMA_FALLBACK_MODEL
         self.base_url = base_url or OLLAMA_BASE_URL
-        self._api_base = self.base_url.rstrip("/v1").rstrip("/")
+        # Native Ollama API base (strip the OpenAI-compat "/v1" *suffix* only —
+        # rstrip("/v1") would wrongly eat trailing digits like a port ":11431").
+        self._api_base = self.base_url.rstrip("/").removesuffix("/v1").rstrip("/")
         self._client = OpenAI(
             base_url=self.base_url,
             api_key="ollama",
@@ -90,6 +93,7 @@ class OllamaCascadeClient:
                     "messages": [{"role": "user", "content": "ping"}],
                     "stream": False,
                     "keep_alive": OLLAMA_KEEP_ALIVE,
+                    "options": {"num_ctx": OLLAMA_NUM_CTX},
                 }).encode()
                 req = urllib.request.Request(
                     f"{self._api_base}/api/chat",
@@ -109,9 +113,21 @@ class OllamaCascadeClient:
         on_status: Callable[[str, str], None] | None = None,
         **kwargs: Any,
     ):
-        """Return (response, model_used, used_fallback)."""
+        """Return (response, model_used, used_fallback).
+
+        NOTE on context size: Ollama's OpenAI-compatible `/v1` endpoint currently
+        IGNORES `num_ctx` (see ollama/ollama#16814). We still forward it (harmless,
+        and honored once ollama/ollama#16825 lands), but the real levers are:
+          1. `warmup()` loads the model at OLLAMA_NUM_CTX via the native `/api/chat`,
+          2. the caller budgets the prompt to fit (see chatbot/context_budget.py),
+          3. optionally set `OLLAMA_CONTEXT_LENGTH` on the Ollama server.
+        """
         models = self._models_for_mode(model_mode)
-        extra_body = {"keep_alive": OLLAMA_KEEP_ALIVE}
+        extra_body = {
+            "keep_alive": OLLAMA_KEEP_ALIVE,
+            "num_ctx": OLLAMA_NUM_CTX,
+            "options": {"num_ctx": OLLAMA_NUM_CTX},
+        }
 
         errors: list[str] = []
         for index, model in enumerate(models):

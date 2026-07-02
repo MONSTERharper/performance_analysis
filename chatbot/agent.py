@@ -5,6 +5,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from chatbot.context_budget import (
+    shrink_system_prompt,
+    system_prompt_budget_tokens,
+    trim_messages_for_llm,
+)
 from chatbot.events import ChatResult, StatusCallback, format_status
 from chatbot.filters import QueryFilters
 from chatbot.intent import (
@@ -23,40 +28,15 @@ from chatbot.knowledge_loader import build_system_prompt
 from chatbot.plot_auto import try_auto_plot
 from chatbot.query_auto import try_auto_query
 from chatbot.mongo_tools import TOOL_DEFINITIONS, execute_tool
-from chatbot.ollama_client import ModelMode, OllamaCascadeClient
+from chatbot.ollama_client import OLLAMA_NUM_CTX, ModelMode, OllamaCascadeClient
 
 MAX_TOOL_ROUNDS = 8
 
 TOOL_INSTRUCTIONS = """
-## IMPORTANT — anti-hallucination rules
-- You do NOT have direct access to the database. Every number, count, or table MUST come from a tool result in this conversation.
-- If you have not called a tool yet for a data question, call one now. Do NOT guess or use training data.
-- Do NOT write MongoDB or Python code in your reply unless the user explicitly asks for the query code.
-- If a tool returns no rows or an error, say so — do not invent placeholder results.
-- When summarizing tool output, only cite values that appear in the tool JSON. If unsure, call the tool again.
-
-## Plotting & Visualizations
-When the user asks for charts, plots, graphs, or trends:
-1. Use the `generate_plot` tool with Python code
-2. Query MongoDB via `get_database()` (returns test_db2)
-3. Use pandas (`pd`) and plotly (`px` or `go`)
-4. Always assign the final chart to variable `fig`
-5. After the plot is generated, briefly explain what the chart shows
-
-## Raw Data / Tables
-When the user asks for raw data, a table, records, spreadsheet, export, or "show me the data":
-1. Use the `fetch_raw_data` tool (NOT find_documents)
-2. Choose the right collection and fields
-3. Apply active sidebar filters via the tool (they are merged automatically)
-4. Summarize row count and mention if data was truncated
-
-Example collections:
-- slide_count_values: daily slide counts (`date_str`, `Specified cycle slides scanned`)
-- scanner_stoppages: downtime (`date_str`, `site`, `diff`, `error`)
-- load_time_analysis: load durations (`duration_seconds`, `date_str`, `site`)
-- regression_metrics: scan time vs area (`average_scan_time`, `date_str`, `site`)
-- Error_counts: error frequency (`error`, `count`, `date_str`)
-- raw_error_logs: individual errors (`errorCode`, `errorRootCause`, `date_str`)
+## Tools (required for data)
+- Call MongoDB tools for any numbers or records. Never invent values.
+- Summaries must match tool JSON exactly.
+- Raw tables: `fetch_raw_data`. Charts: only if built-in charts are disabled.
 """
 
 
@@ -162,6 +142,55 @@ class PerformanceChatbot:
             if tool["function"]["name"] != "generate_plot"
         ]
 
+    @staticmethod
+    def _is_context_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return (
+            "context size" in text
+            or "exceed_context" in text
+            or "n_ctx" in text
+            or "context length" in text
+        )
+
+    def _llm_messages(self, system_prompt: str, *, aggressive: bool) -> list[dict[str, Any]]:
+        budget = system_prompt_budget_tokens(OLLAMA_NUM_CTX, aggressive=aggressive)
+        prompt = shrink_system_prompt(system_prompt, max_tokens=budget)
+        if aggressive:
+            msgs = [m for m in self.messages if m.get("role") == "user"][-1:]
+        else:
+            msgs = trim_messages_for_llm(self.messages)
+        return [{"role": "system", "content": prompt}, *msgs]
+
+    def _chat_completion_with_context_retry(
+        self,
+        *,
+        model_mode: ModelMode,
+        system_prompt: str,
+        tools: list[dict],
+        tool_choice: str,
+        on_status: StatusCallback | None,
+        status_log: list[str],
+    ):
+        last_error: Exception | None = None
+        for aggressive in (False, True):
+            try:
+                return self.ollama.chat_completion(
+                    model_mode=model_mode,
+                    on_status=lambda phase, detail: self._emit(on_status, phase, detail, status_log),
+                    messages=self._llm_messages(system_prompt, aggressive=aggressive),
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    temperature=0.1,
+                )
+            except RuntimeError as exc:
+                last_error = exc
+                if aggressive or not self._is_context_error(exc):
+                    raise
+                status_log.append("Context window full — retrying with trimmed history and schema.")
+        if last_error:
+            raise last_error
+        raise RuntimeError("LLM request failed")
+
     def _try_builtin_plot(
         self,
         user_message: str,
@@ -234,8 +263,8 @@ class PerformanceChatbot:
                     status_log=status_log,
                 )
 
-        # Strict mode: built-in queries return exact MongoDB tables (no LLM summary)
-        if strict_grounded_answers and requires_database_query(user_message):
+        # Built-in queries for known patterns — skip LLM (saves context, avoids hallucination)
+        if requires_database_query(user_message):
             status_log = []
             tool_calls_made = []
             auto_result = self._try_auto_query_fallback(
@@ -308,6 +337,14 @@ class PerformanceChatbot:
         tool_results: list[tuple[str, dict]] = []
         tools = self._tools_for_request(force_builtin_plots)
 
+        # Ensure the model is loaded at the configured context window via the native
+        # endpoint (the /v1 inference call cannot set num_ctx itself). No-op if already
+        # warm. This makes CLI/API callers as safe as the Streamlit app.
+        self.ollama.warmup(
+            model_mode,
+            on_status=lambda phase, detail: self._emit(on_status, phase, detail, status_log),
+        )
+
         self._emit(on_status, "retrieving_context", "", status_log)
         system_prompt, rag_chunks = self._build_system_prompt(
             user_message, filters, use_rag, rag_top_k
@@ -331,23 +368,23 @@ class PerformanceChatbot:
                 else "auto"
             )
             try:
-                response, model_used, used_fallback = self.ollama.chat_completion(
+                response, model_used, used_fallback = self._chat_completion_with_context_retry(
                     model_mode=model_mode,
-                    on_status=lambda phase, detail: self._emit(on_status, phase, detail, status_log),
-                    messages=[{"role": "system", "content": system_prompt}, *self.messages],
+                    system_prompt=system_prompt,
                     tools=tools,
                     tool_choice=tool_choice,
-                    temperature=0.1,
+                    on_status=on_status,
+                    status_log=status_log,
                 )
             except RuntimeError:
                 if tool_choice == "required":
-                    response, model_used, used_fallback = self.ollama.chat_completion(
+                    response, model_used, used_fallback = self._chat_completion_with_context_retry(
                         model_mode=model_mode,
-                        on_status=lambda phase, detail: self._emit(on_status, phase, detail, status_log),
-                        messages=[{"role": "system", "content": system_prompt}, *self.messages],
+                        system_prompt=system_prompt,
                         tools=tools,
                         tool_choice="auto",
-                        temperature=0.1,
+                        on_status=on_status,
+                        status_log=status_log,
                     )
                 else:
                     raise

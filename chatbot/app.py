@@ -1,9 +1,11 @@
-"""Streamlit web UI — clean chat interface with Settings page."""
+"""Streamlit web app — Performance AI chat over test_db2.
+
+Layout: persistent left sidebar (controls) + centered chat column (conversation).
+"""
 
 from __future__ import annotations
 
 import sys
-from datetime import date
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -27,14 +29,14 @@ from chatbot.export_utils import (
     records_to_json,
 )
 from chatbot.filters import QueryFilters, default_date_range, load_sites
-from chatbot.ollama_client import OllamaCascadeClient
+from chatbot.ollama_client import OLLAMA_NUM_CTX, OllamaCascadeClient
 from chatbot.saved_queries import delete_query, load_queries, save_query
 
 st.set_page_config(
     page_title="Performance AI",
     page_icon="🔬",
-    layout="centered",
-    initial_sidebar_state="collapsed",
+    layout="wide",
+    initial_sidebar_state="expanded",
 )
 
 MODEL_MODE_OPTIONS = {
@@ -44,43 +46,76 @@ MODEL_MODE_OPTIONS = {
 }
 
 STARTER_PROMPTS = [
-    ("📈 Slides trend", "Plot total slides scanned day-wise for the last 5 weeks"),
-    ("⏱️ Load times", "Plot average load duration by site"),
-    ("⚠️ Top errors", "What are the top 10 error codes?"),
-    ("📋 Raw data", "Show raw scanner stoppages as a table"),
+    ("📈", "Slides trend", "Plot total slides scanned day-wise for the last 5 weeks"),
+    ("⏱️", "Load times", "Plot average load duration by site"),
+    ("⚠️", "Top errors", "What are the top 10 error codes?"),
+    ("📋", "Raw data", "Show raw scanner stoppages as a table"),
+    ("🛑", "Stoppages", "Which sites have the most scanner stoppages?"),
+    ("🗂️", "Collections", "List all collections in the database"),
 ]
 
 CSS = """
 <style>
-    #MainMenu, footer, header {visibility: hidden; height: 0;}
-    .block-container {padding-top: 0.5rem; padding-bottom: 4rem; max-width: 46rem;}
-    .app-header {
-        position: sticky; top: 0; z-index: 999;
-        background: var(--background-color);
-        border-bottom: 1px solid rgba(128,128,128,0.2);
-        padding: 0.75rem 0 0.75rem 0; margin-bottom: 1rem;
+    #MainMenu, footer {visibility: hidden;}
+    header[data-testid="stHeader"] {background: transparent;}
+
+    /* Center + constrain the main chat column for readability */
+    .main .block-container {
+        max-width: 860px;
+        padding-top: 1.25rem;
+        padding-bottom: 6rem;
     }
-    .app-title {font-size: 1.15rem; font-weight: 600; margin: 0; line-height: 1.3;}
-    .app-sub {font-size: 0.8rem; opacity: 0.55; margin: 0;}
+
+    /* Sidebar polish */
+    section[data-testid="stSidebar"] {
+        border-right: 1px solid rgba(128,128,128,0.15);
+    }
+    .brand {display: flex; align-items: center; gap: 10px; margin: 0.25rem 0 0.5rem 0;}
+    .brand-logo {
+        width: 34px; height: 34px; border-radius: 9px;
+        background: linear-gradient(135deg, #6366f1, #8b5cf6);
+        display: flex; align-items: center; justify-content: center; font-size: 18px;
+    }
+    .brand-name {font-size: 1.05rem; font-weight: 700; line-height: 1.1;}
+    .brand-sub {font-size: 0.72rem; opacity: 0.55;}
+
+    .status-dot {height: 8px; width: 8px; border-radius: 50%; display: inline-block; margin-right: 6px;}
+    .dot-ok {background: #22c55e;}
+    .dot-warn {background: #f59e0b;}
+    .dot-off {background: #ef4444;}
+    .status-line {font-size: 0.8rem; opacity: 0.8; margin: 2px 0;}
+
+    /* Chat header */
+    .chat-head {
+        display: flex; justify-content: space-between; align-items: center;
+        margin-bottom: 0.75rem;
+    }
+    .chat-title {font-size: 1.35rem; font-weight: 700; margin: 0;}
+    .filter-chip {
+        display: inline-block; font-size: 0.75rem; padding: 3px 12px;
+        border-radius: 999px; background: rgba(99,102,241,0.14); color: #6366f1;
+        font-weight: 500;
+    }
+
+    /* Status pill during generation */
     .status-pill {
         display: inline-flex; align-items: center; gap: 6px;
-        padding: 6px 14px; border-radius: 20px;
+        padding: 6px 14px; border-radius: 999px;
         background: rgba(99,102,241,0.12); color: #6366f1;
-        font-size: 0.82rem; font-weight: 500; margin: 0.25rem 0 0.75rem 0;
+        font-size: 0.82rem; font-weight: 500; margin: 0.25rem 0 0.6rem 0;
     }
-    .welcome-box {
-        text-align: center; padding: 2.5rem 1rem 1.5rem 1rem;
-    }
-    .welcome-box h2 {font-size: 1.6rem; font-weight: 600; margin-bottom: 0.25rem;}
-    .welcome-box p {opacity: 0.6; font-size: 0.95rem; margin-bottom: 1.5rem;}
-    .chip-row {display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: center;}
+
+    /* Welcome */
+    .welcome {text-align: center; padding: 2rem 0 1rem 0;}
+    .welcome h2 {font-size: 1.7rem; font-weight: 700; margin-bottom: 0.35rem;}
+    .welcome p {opacity: 0.6; font-size: 0.95rem; margin-bottom: 0.5rem;}
+
+    /* Chat message bubbles */
     div[data-testid="stChatMessage"] {
-        background: transparent !important;
-        border: none !important;
-        padding: 0.25rem 0 !important;
+        border-radius: 14px; padding: 0.4rem 0.9rem !important; margin-bottom: 0.3rem;
     }
-    .export-row {margin-top: 0.5rem;}
-    .settings-back {margin-bottom: 1rem;}
+
+    .stButton>button {border-radius: 10px;}
 </style>
 """
 
@@ -88,7 +123,7 @@ CSS = """
 def init_session_state() -> None:
     start, end = default_date_range(5)
 
-    # One-time: old sessions had date filter on by default
+    # One-time migration: old sessions had the date filter on by default.
     if "_filters_migrated" not in st.session_state and "filter_apply_dates" in st.session_state:
         st.session_state.filter_apply_dates = False
         st.session_state.filter_apply_site = False
@@ -100,7 +135,6 @@ def init_session_state() -> None:
         "bot": PerformanceChatbot(),
         "ollama": OllamaCascadeClient(),
         "model_mode": "auto",
-        "model_mode_label": "Auto (DeepSeek → Qwen)",
         "filter_site_key": None,
         "filter_site_name": None,
         "filter_date_start": start,
@@ -109,12 +143,12 @@ def init_session_state() -> None:
         "filter_apply_dates": False,
         "last_user_query": "",
         "use_rag": True,
-        "rag_top_k": 5,
+        "rag_top_k": 3,
         "strict_grounded_answers": True,
         "force_builtin_plots": True,
         "auto_chart_with_data": False,
         "models_warmed": False,
-        "nav": "Chat",
+        "health": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -132,25 +166,9 @@ def build_filters() -> QueryFilters:
     )
 
 
-def render_header() -> None:
-    c1, c2, c3 = st.columns([5, 1, 1])
-    with c1:
-        st.markdown(
-            '<p class="app-title">Performance AI</p>'
-            '<p class="app-sub">Scanner analytics · test_db2</p>',
-            unsafe_allow_html=True,
-        )
-    with c2:
-        if st.button("＋ New", help="Clear chat", use_container_width=True):
-            st.session_state.messages = []
-            st.session_state.bot.reset()
-            st.rerun()
-    with c3:
-        if st.button("⚙️", help="Settings", use_container_width=True):
-            st.session_state.nav = "Settings"
-            st.rerun()
-
-
+# --------------------------------------------------------------------------- #
+# Rendering helpers
+# --------------------------------------------------------------------------- #
 def render_plot(figure_json: str | None, key: str) -> None:
     if not figure_json:
         return
@@ -171,36 +189,32 @@ def render_raw_data(raw_data: list[dict] | None, meta: dict | None) -> None:
         if meta.get("truncated"):
             label += " (truncated)"
     st.caption(label)
-    st.dataframe(df, use_container_width=True, height=min(320, 35 * len(df) + 38))
+    st.dataframe(df, use_container_width=True, height=min(360, 35 * len(df) + 38))
 
 
 def render_exports(msg: dict, key: str) -> None:
-    with st.container():
-        cols = st.columns(6)
-        i = 0
-        if msg.get("raw_data"):
-            cols[i].download_button("⬇ CSV", records_to_csv(msg["raw_data"]),
-                                    file_name="data.csv", mime="text/csv", key=f"{key}_csv")
-            i += 1
-            cols[i].download_button("⬇ JSON", records_to_json(msg["raw_data"]),
-                                    file_name="data.json", mime="application/json", key=f"{key}_json")
-            i += 1
-        if msg.get("figure_json"):
-            cols[i].download_button("⬇ HTML", figure_to_html(msg["figure_json"]),
-                                    file_name="chart.html", mime="text/html", key=f"{key}_html")
-            i += 1
-            png = figure_to_png_bytes(msg["figure_json"])
-            if png:
-                cols[i].download_button("⬇ PNG", png, file_name="chart.png",
-                                        mime="image/png", key=f"{key}_png")
-                i += 1
-        if msg.get("content"):
-            cols[i].download_button("⬇ TXT", content_to_txt(msg["content"]),
-                                    file_name="response.txt", mime="text/plain", key=f"{key}_txt")
+    buttons: list[tuple] = []
+    if msg.get("raw_data"):
+        buttons.append(("⬇ CSV", records_to_csv(msg["raw_data"]), "data.csv", "text/csv"))
+        buttons.append(("⬇ JSON", records_to_json(msg["raw_data"]), "data.json", "application/json"))
+    if msg.get("figure_json"):
+        buttons.append(("⬇ HTML", figure_to_html(msg["figure_json"]), "chart.html", "text/html"))
+        png = figure_to_png_bytes(msg["figure_json"])
+        if png:
+            buttons.append(("⬇ PNG", png, "chart.png", "image/png"))
+    if msg.get("content"):
+        buttons.append(("⬇ TXT", content_to_txt(msg["content"]), "response.txt", "text/plain"))
+
+    if not buttons:
+        return
+    cols = st.columns(len(buttons))
+    for col, (label, data, fname, mime) in zip(cols, buttons):
+        col.download_button(label, data, file_name=fname, mime=mime, key=f"{key}_{fname}")
 
 
 def render_message(msg: dict, index: int) -> None:
-    with st.chat_message(msg["role"], avatar="🧑‍💻" if msg["role"] == "user" else "🔬"):
+    avatar = "🧑‍💻" if msg["role"] == "user" else "🔬"
+    with st.chat_message(msg["role"], avatar=avatar):
         if msg["role"] == "assistant":
             render_plot(msg.get("figure_json"), key=f"hist_plot_{index}")
             render_raw_data(msg.get("raw_data"), msg.get("raw_data_meta"))
@@ -211,9 +225,9 @@ def render_message(msg: dict, index: int) -> None:
             if msg.get("model") or msg.get("tools"):
                 with st.expander("Details"):
                     if msg.get("model"):
-                        st.caption(f"Model: {msg['model']}")
+                        st.caption(f"Answer source: {msg['model']}")
                     if msg.get("tools"):
-                        st.caption(f"Tools: {', '.join(msg['tools'])}")
+                        st.caption(f"Steps: {', '.join(msg['tools'])}")
         else:
             st.markdown(msg["content"])
 
@@ -221,20 +235,23 @@ def render_message(msg: dict, index: int) -> None:
 def render_welcome() -> None:
     st.markdown(
         """
-        <div class="welcome-box">
+        <div class="welcome">
             <h2>What would you like to analyze?</h2>
-            <p>Ask about scanner performance, request charts, or export raw data.</p>
+            <p>Ask about scanner performance, request charts, or export raw data from <code>test_db2</code>.</p>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    cols = st.columns(2)
-    for i, (label, query) in enumerate(STARTER_PROMPTS):
-        if cols[i % 2].button(label, key=f"chip_{i}", use_container_width=True):
+    cols = st.columns(3)
+    for i, (icon, label, query) in enumerate(STARTER_PROMPTS):
+        if cols[i % 3].button(f"{icon}  {label}", key=f"chip_{i}", use_container_width=True):
             st.session_state.pending_question = query
             st.rerun()
 
 
+# --------------------------------------------------------------------------- #
+# Model / connection status
+# --------------------------------------------------------------------------- #
 def warmup_models() -> None:
     if st.session_state.models_warmed:
         return
@@ -244,6 +261,222 @@ def warmup_models() -> None:
     st.session_state.models_warmed = True
 
 
+def _status_line(ok: bool | None, ok_text: str, off_text: str, warn: bool = False) -> str:
+    if ok is None:
+        dot = "dot-warn"
+        text = "checking…"
+    elif ok:
+        dot = "dot-ok"
+        text = ok_text
+    else:
+        dot = "dot-warn" if warn else "dot-off"
+        text = off_text
+    return f'<div class="status-line"><span class="status-dot {dot}"></span>{text}</div>'
+
+
+# --------------------------------------------------------------------------- #
+# Sidebar (all controls live here — this is the "web app" chrome)
+# --------------------------------------------------------------------------- #
+def render_sidebar() -> None:
+    ollama: OllamaCascadeClient = st.session_state.ollama
+
+    with st.sidebar:
+        st.markdown(
+            '<div class="brand">'
+            '<div class="brand-logo">🔬</div>'
+            '<div><div class="brand-name">Performance AI</div>'
+            '<div class="brand-sub">Scanner analytics · test_db2</div></div>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+        if st.button("＋  New chat", use_container_width=True, type="primary"):
+            st.session_state.messages = []
+            st.session_state.bot.reset()
+            st.rerun()
+
+        # Live status block
+        health = st.session_state.health
+        model_ok = st.session_state.models_warmed or (health or {}).get("primary_available")
+        st.markdown(
+            _status_line(
+                (health or {}).get("ollama_reachable") if health else None,
+                "Ollama connected",
+                "Ollama unreachable",
+            )
+            + _status_line(
+                bool(model_ok) if (health or st.session_state.models_warmed) else None,
+                f"Model ready · {ollama.primary_model}",
+                "Model not loaded",
+                warn=True,
+            ),
+            unsafe_allow_html=True,
+        )
+
+        st.divider()
+
+        _sidebar_filters()
+        _sidebar_charts()
+        _sidebar_model(ollama)
+        _sidebar_knowledge()
+        _sidebar_saved()
+        _sidebar_system(ollama)
+
+
+def _sidebar_filters() -> None:
+    active = build_filters().is_active()
+    with st.expander("🔍  Filters" + ("  •  on" if active else ""), expanded=False):
+        st.caption("Off by default — all sites & all dates until enabled.")
+        try:
+            sites = load_sites()
+        except Exception as exc:
+            st.warning(f"Couldn't load sites: {exc}")
+            sites = []
+        opts = ["All sites"] + [s["site_name"] for s in sites]
+        keymap = {s["site_name"]: s["site_key"] for s in sites}
+
+        st.session_state.filter_apply_site = st.toggle(
+            "Filter by site", st.session_state.filter_apply_site
+        )
+        idx = opts.index(st.session_state.filter_site_name) if st.session_state.filter_site_name in opts else 0
+        site = st.selectbox("Site", opts, index=idx, disabled=not st.session_state.filter_apply_site)
+        if st.session_state.filter_apply_site and site != "All sites":
+            st.session_state.filter_site_name = site
+            st.session_state.filter_site_key = keymap.get(site)
+        else:
+            st.session_state.filter_site_name = None
+            st.session_state.filter_site_key = None
+
+        st.session_state.filter_apply_dates = st.toggle(
+            "Filter by date", st.session_state.filter_apply_dates
+        )
+        s, e = default_date_range(5)
+        c1, c2 = st.columns(2)
+        with c1:
+            st.session_state.filter_date_start = st.date_input(
+                "From", st.session_state.filter_date_start or s,
+                disabled=not st.session_state.filter_apply_dates,
+            )
+        with c2:
+            st.session_state.filter_date_end = st.date_input(
+                "To", st.session_state.filter_date_end or e,
+                disabled=not st.session_state.filter_apply_dates,
+            )
+
+
+def _sidebar_charts() -> None:
+    with st.expander("📈  Charts & answers", expanded=False):
+        st.session_state.strict_grounded_answers = st.toggle(
+            "Grounded answers only",
+            st.session_state.strict_grounded_answers,
+            help="Answers are built straight from MongoDB results. The model cannot rename or invent values.",
+        )
+        st.session_state.force_builtin_plots = st.toggle(
+            "Built-in charts only",
+            st.session_state.force_builtin_plots,
+            help="Use reliable Plotly templates instead of LLM-generated plot code (recommended).",
+        )
+        st.session_state.auto_chart_with_data = st.toggle(
+            "Attach chart to data answers",
+            st.session_state.auto_chart_with_data,
+            help='Also draw a chart for error/slide/stoppage questions, even without saying "plot".',
+            disabled=not st.session_state.force_builtin_plots,
+        )
+
+
+def _sidebar_model(ollama: OllamaCascadeClient) -> None:
+    with st.expander("🤖  Model", expanded=False):
+        current_label = next(
+            (k for k, v in MODEL_MODE_OPTIONS.items() if v == st.session_state.model_mode),
+            list(MODEL_MODE_OPTIONS.keys())[0],
+        )
+        label = st.selectbox(
+            "Model mode",
+            list(MODEL_MODE_OPTIONS.keys()),
+            index=list(MODEL_MODE_OPTIONS.keys()).index(current_label),
+        )
+        st.session_state.model_mode = MODEL_MODE_OPTIONS[label]
+        st.caption(f"Primary `{ollama.primary_model}` · Fallback `{ollama.fallback_model}`")
+        if st.button("Load models into memory", use_container_width=True):
+            st.session_state.models_warmed = False
+            with st.spinner("Loading…"):
+                warmed = ollama.warmup(st.session_state.model_mode)
+            st.session_state.models_warmed = bool(warmed)
+            if warmed:
+                st.success(f"Ready: {', '.join(warmed)}")
+            else:
+                st.warning("Check that Ollama is running.")
+
+
+def _sidebar_knowledge() -> None:
+    with st.expander("📚  Knowledge (RAG)", expanded=False):
+        st.session_state.use_rag = st.toggle(
+            "Enable RAG", st.session_state.use_rag,
+            help="Retrieve only relevant schema per query (smaller prompts).",
+        )
+        st.session_state.rag_top_k = st.slider(
+            "Context chunks", 3, 10, st.session_state.rag_top_k,
+            disabled=not st.session_state.use_rag,
+        )
+
+
+def _sidebar_saved() -> None:
+    with st.expander("⭐  Saved queries", expanded=False):
+        if st.button(
+            "Save last question",
+            disabled=not st.session_state.last_user_query,
+            use_container_width=True,
+        ):
+            save_query(
+                st.session_state.last_user_query,
+                site_key=st.session_state.filter_site_key,
+                site_name=st.session_state.filter_site_name,
+                date_start=str(st.session_state.filter_date_start) if st.session_state.filter_apply_dates else None,
+                date_end=str(st.session_state.filter_date_end) if st.session_state.filter_apply_dates else None,
+            )
+            st.toast("Saved!")
+            st.rerun()
+        try:
+            saved = load_queries()[:15]
+        except Exception:
+            saved = []
+        if not saved:
+            st.caption("No saved queries yet.")
+        for q in saved:
+            c1, c2 = st.columns([6, 1])
+            if c1.button(q["query"][:48], key=f"sq_{q['id']}", use_container_width=True):
+                st.session_state.pending_question = q["query"]
+                st.rerun()
+            if c2.button("✕", key=f"del_{q['id']}"):
+                delete_query(q["id"])
+                st.rerun()
+
+
+def _sidebar_system(ollama: OllamaCascadeClient) -> None:
+    with st.expander("🛠  System", expanded=False):
+        st.caption("Connected to **`test_db2`** on MongoDB")
+        st.caption(f"Prompt budget target (`OLLAMA_NUM_CTX`): **{OLLAMA_NUM_CTX:,}** tokens")
+        st.caption(
+            "Set this to match the model's real context. Loading a model here (Model tab) "
+            "warms it at this size; for a permanent change set `OLLAMA_CONTEXT_LENGTH` on the "
+            "Ollama server. Prompts are auto-trimmed to fit, so overflow won't crash the app."
+        )
+        if st.button("Check connection & models", use_container_width=True):
+            with st.spinner("Pinging Ollama…"):
+                st.session_state.health = ollama.check_health()
+            st.rerun()
+        if st.session_state.health:
+            st.json(st.session_state.health)
+        if st.button("Clear chat history", use_container_width=True):
+            st.session_state.messages = []
+            st.session_state.bot.reset()
+            st.toast("Cleared")
+            st.rerun()
+
+
+# --------------------------------------------------------------------------- #
+# Chat turn
+# --------------------------------------------------------------------------- #
 def run_chat_turn(user_input: str) -> None:
     filters = build_filters()
     st.session_state.last_user_query = user_input
@@ -301,13 +534,27 @@ def run_chat_turn(user_input: str) -> None:
             st.session_state.messages.append({"role": "assistant", "content": f"**Error:** {exc}"})
 
 
-def page_chat() -> None:
-    st.markdown(CSS, unsafe_allow_html=True)
-    st.markdown('<div class="app-header">', unsafe_allow_html=True)
-    render_header()
-    st.markdown("</div>", unsafe_allow_html=True)
+def render_chat_header() -> None:
+    filters = build_filters()
+    chip = (
+        f'<span class="filter-chip">Filtered · {filters.summary()}</span>'
+        if filters.is_active()
+        else ""
+    )
+    st.markdown(
+        f'<div class="chat-head"><p class="chat-title">Chat</p>{chip}</div>',
+        unsafe_allow_html=True,
+    )
 
+
+def main() -> None:
+    init_session_state()
+    st.markdown(CSS, unsafe_allow_html=True)
+
+    render_sidebar()
     warmup_models()
+
+    render_chat_header()
 
     if not st.session_state.messages:
         render_welcome()
@@ -319,124 +566,6 @@ def page_chat() -> None:
     if prompt := (pending or st.chat_input("Message Performance AI…")):
         run_chat_turn(prompt)
         st.rerun()
-
-
-def page_settings() -> None:
-    st.markdown(CSS, unsafe_allow_html=True)
-    if st.button("← Back to chat", type="primary"):
-        st.session_state.nav = "Chat"
-        st.rerun()
-
-    st.markdown("### Settings")
-    ollama: OllamaCascadeClient = st.session_state.ollama
-
-    tab_model, tab_filters, tab_rag, tab_charts, tab_saved, tab_system = st.tabs(
-        ["🤖 Model", "🔍 Filters", "📚 Knowledge", "📈 Charts", "⭐ Saved", "🛠 System"]
-    )
-
-    with tab_model:
-        label = st.selectbox("Model mode", list(MODEL_MODE_OPTIONS.keys()),
-                             index=list(MODEL_MODE_OPTIONS.values()).index(st.session_state.model_mode))
-        st.session_state.model_mode = MODEL_MODE_OPTIONS[label]
-        st.caption(f"Primary `{ollama.primary_model}` · Fallback `{ollama.fallback_model}`")
-        if st.button("Load models into memory", type="primary", use_container_width=True):
-            st.session_state.models_warmed = False
-            with st.spinner("Loading…"):
-                warmed = ollama.warmup(st.session_state.model_mode)
-            st.session_state.models_warmed = bool(warmed)
-            st.success(f"Ready: {', '.join(warmed)}") if warmed else st.warning("Check Ollama is running.")
-        if st.button("Check Ollama health", use_container_width=True):
-            st.json(ollama.check_health())
-
-    with tab_filters:
-        st.caption("Off by default — all sites and all dates are used until you enable a filter below.")
-        sites = load_sites()
-        opts = ["All sites"] + [s["site_name"] for s in sites]
-        keymap = {s["site_name"]: s["site_key"] for s in sites}
-        st.session_state.filter_apply_site = st.toggle("Filter by site", st.session_state.filter_apply_site)
-        idx = opts.index(st.session_state.filter_site_name) if st.session_state.filter_site_name in opts else 0
-        site = st.selectbox("Site", opts, index=idx, disabled=not st.session_state.filter_apply_site)
-        if st.session_state.filter_apply_site and site != "All sites":
-            st.session_state.filter_site_name, st.session_state.filter_site_key = site, keymap.get(site)
-        else:
-            st.session_state.filter_site_name = st.session_state.filter_site_key = None
-        st.session_state.filter_apply_dates = st.toggle("Filter by date", st.session_state.filter_apply_dates)
-        c1, c2 = st.columns(2)
-        s, e = default_date_range(5)
-        with c1:
-            st.session_state.filter_date_start = st.date_input(
-                "From", st.session_state.filter_date_start or s, disabled=not st.session_state.filter_apply_dates)
-        with c2:
-            st.session_state.filter_date_end = st.date_input(
-                "To", st.session_state.filter_date_end or e, disabled=not st.session_state.filter_apply_dates)
-        f = build_filters()
-        if f.is_active():
-            st.info(f"Active filters: {f.summary()}")
-        else:
-            st.success("No filters — using all data")
-
-    with tab_rag:
-        st.session_state.use_rag = st.toggle("Enable RAG", st.session_state.use_rag,
-                                              help="Retrieve only relevant schema per query")
-        st.session_state.rag_top_k = st.slider("Context chunks", 3, 10, st.session_state.rag_top_k,
-                                                disabled=not st.session_state.use_rag)
-
-    with tab_charts:
-        st.session_state.strict_grounded_answers = st.toggle(
-            "Grounded answers only",
-            st.session_state.strict_grounded_answers,
-            help="Show tables copied from MongoDB tool output. The model cannot rename or invent error types.",
-        )
-        st.session_state.force_builtin_plots = st.toggle(
-            "Built-in charts only",
-            st.session_state.force_builtin_plots,
-            help="Use reliable Plotly templates instead of LLM-generated plot code (recommended).",
-        )
-        st.session_state.auto_chart_with_data = st.toggle(
-            "Attach chart to data answers",
-            st.session_state.auto_chart_with_data,
-            help='Also draw a chart when you ask about errors, slides, or stoppages — even without saying "plot".',
-            disabled=not st.session_state.force_builtin_plots,
-        )
-        if st.session_state.strict_grounded_answers:
-            st.caption("Data answers come straight from query results — no paraphrased counts.")
-        if st.session_state.force_builtin_plots:
-            st.caption('Say "plot …" for charts, or enable attach chart above.')
-
-    with tab_saved:
-        if st.button("Save last question", disabled=not st.session_state.last_user_query, use_container_width=True):
-            save_query(st.session_state.last_user_query,
-                       site_key=st.session_state.filter_site_key,
-                       site_name=st.session_state.filter_site_name,
-                       date_start=str(st.session_state.filter_date_start) if st.session_state.filter_apply_dates else None,
-                       date_end=str(st.session_state.filter_date_end) if st.session_state.filter_apply_dates else None)
-            st.toast("Saved!")
-            st.rerun()
-        for q in load_queries()[:15]:
-            c1, c2 = st.columns([6, 1])
-            if c1.button(q["query"][:55], key=f"sq_{q['id']}", use_container_width=True):
-                st.session_state.pending_question = q["query"]
-                st.session_state.nav = "Chat"
-                st.rerun()
-            if c2.button("✕", key=f"del_{q['id']}"):
-                delete_query(q["id"])
-                st.rerun()
-
-    with tab_system:
-        st.markdown("Connected to **`test_db2`** on MongoDB")
-        if st.button("Clear all chat history", use_container_width=True):
-            st.session_state.messages = []
-            st.session_state.bot.reset()
-            st.toast("Cleared")
-            st.rerun()
-
-
-def main() -> None:
-    init_session_state()
-    if st.session_state.nav == "Settings":
-        page_settings()
-    else:
-        page_chat()
 
 
 if __name__ == "__main__":

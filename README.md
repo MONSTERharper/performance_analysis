@@ -89,6 +89,8 @@ Environment variables in `.env`:
 | `OLLAMA_PRIMARY_MODEL` | `deepseek-r1:14b` |
 | `OLLAMA_FALLBACK_MODEL` | `qwen2.5:14b` |
 | `OLLAMA_TIMEOUT` | `120` (seconds) |
+| `OLLAMA_KEEP_ALIVE` | `60m` |
+| `OLLAMA_NUM_CTX` | `8192` (model context window in tokens) |
 
 ## LLM Knowledge Base
 
@@ -134,14 +136,37 @@ Opens at `http://localhost:8501`
 - **DeepSeek only** — force `deepseek-r1:14b`
 - **Qwen only** — force `qwen2.5:14b`
 
+**Layout:** persistent left **sidebar** holds all controls (New chat, connection/model
+status, Filters, Charts & answers, Model, Knowledge, Saved queries, System); the centered
+main column is the conversation.
+
 **Features:**
-- **RAG knowledge retrieval** — only relevant schema chunks per query (not full 26k doc)
-- Live status updates: retrieving context, loading model, thinking, querying DB, fetching data, plotting
-- **Sidebar filters:** site dropdown + date range (auto-applied to all queries)
-- **Saved queries:** bookmark and re-run questions with filters
-- **Export buttons:** CSV, JSON, chart HTML/PNG, response text on every answer
-- **Raw data tables:** ask "give me the raw data" — shows interactive table + download
-- Plotly charts rendered inline
+- **Grounded answers (default on):** answers to data questions are built directly from
+  MongoDB query results, so the model cannot rename or invent values (e.g. fabricated
+  error types). Toggle in *Sidebar → Charts & answers*.
+- **Built-in charts (default on):** reliable Plotly templates instead of flaky LLM plot
+  code. Say "plot …", or enable *Attach chart to data answers*.
+- **Context-safe prompts:** requests are trimmed to fit the model's context window
+  (`OLLAMA_NUM_CTX`, default 8192) and automatically retry with a smaller prompt if the
+  window is exceeded — no more "exceeds available context size" crashes.
+- **RAG knowledge retrieval** — only relevant schema chunks per query (not the full doc).
+- Live status updates: retrieving context, loading model, thinking, querying DB, plotting.
+- **Opt-in filters:** site + date range are OFF by default (all data); enable per query.
+- **Saved queries:** bookmark and re-run questions with filters.
+- **Export buttons:** CSV, JSON, chart HTML/PNG, response text on every answer.
+- **Raw data tables:** ask "give me the raw data" — interactive table + download.
+
+### Tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+The suite (no live MongoDB/Ollama needed) covers intent routing, context budgeting,
+grounded-answer formatting, filters, built-in queries, and the full agent flow —
+including regression guards for context-window overflow recovery and post-query
+hallucination.
 
 ### CLI alternative
 
