@@ -14,6 +14,11 @@ MAX_TOOL_ROUNDS = 6
 MAX_HISTORY_MESSAGES = 12  # keep the system prompt + recent turns
 
 
+def _log(msg: str) -> None:
+    """Print to the terminal so you can see the model working."""
+    print(f"[chatbot] {msg}", flush=True)
+
+
 @dataclass
 class Answer:
     content: str
@@ -41,7 +46,9 @@ class Chatbot:
         return [system, *rest]
 
     def ask(self, question: str, on_status: Callable[[str], None] | None = None) -> Answer:
+        _log(f"warming up model '{self.client.model}'…")
         self.client.warmup()
+        _log(f"USER: {question}")
         if not self.messages:
             self.messages.append({"role": "system", "content": build_system_prompt()})
         self.messages.append({"role": "user", "content": question})
@@ -50,9 +57,10 @@ class Chatbot:
         rows: list[dict] | None = None
         collection: str | None = None
 
-        for _ in range(MAX_TOOL_ROUNDS):
+        for round_num in range(1, MAX_TOOL_ROUNDS + 1):
             if on_status:
                 on_status("Thinking…")
+            _log(f"round {round_num}: calling model…")
             resp = self.client.chat(self._trim(), tools=TOOL_DEFINITIONS, tool_choice="auto")
             msg = resp.choices[0].message
 
@@ -71,6 +79,7 @@ class Chatbot:
             self.messages.append(entry)
 
             if not msg.tool_calls:
+                _log(f"ANSWER: {(msg.content or '(no answer)')[:500]}")
                 return Answer(
                     content=msg.content or "(no answer)",
                     rows=rows,
@@ -84,15 +93,25 @@ class Chatbot:
                 if on_status:
                     on_status(f"Querying MongoDB — {name}…")
                 args = json.loads(tc.function.arguments or "{}")
+                _log(f"TOOL CALL -> {name}({json.dumps(args, default=str)})")
                 result = execute_tool(name, args)
                 data = json.loads(result)
                 if isinstance(data, dict):
-                    if data.get("documents"):
+                    if "error" in data:
+                        _log(f"  result: ERROR {data['error']}")
+                    elif data.get("documents") is not None:
                         rows, collection = data["documents"], data.get("collection")
-                    elif data.get("results"):
+                        _log(f"  result: {len(data['documents'])} document(s) from '{collection}'")
+                    elif data.get("results") is not None:
                         rows, collection = data["results"], data.get("collection")
+                        _log(f"  result: {len(data['results'])} row(s) from '{collection}'")
+                    elif "count" in data:
+                        _log(f"  result: count={data['count']}")
+                    else:
+                        _log(f"  result: {json.dumps(data, default=str)[:300]}")
                 self.messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 
+        _log("gave up after max tool rounds")
         return Answer(
             content="I couldn't finish that after several query steps. Try rephrasing.",
             rows=rows,
